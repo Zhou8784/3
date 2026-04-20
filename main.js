@@ -25,7 +25,9 @@ window.onload = () => {
     initMap();
     
     const stored = loadSchedule();
-    if (stored && stored.length > 0) {
+    //if (stored && stored.length > 0) {
+       // currentSchedule = stored;
+    if (Array.isArray(stored) && stored.length > 0) {
         currentSchedule = stored;
     } else {
         currentSchedule = [...DEFAULT_SCHEDULE];
