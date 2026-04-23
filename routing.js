@@ -1,82 +1,93 @@
-// ========== routing.js（优化版） ==========
-
 function buildGraphFromCorridors(floor) {
   const nodes = [];
+  const nodeMap = new Map(); // 去重用
+
   const corridorData = MAP_DATA.corridors?.filter(c => c.floor === floor) || [];
 
-  // 第一步：将走廊路径点转为图节点（去重）
-  corridorData.forEach(corridor => {
-    const path = corridor.path;
+  function getNodeId(p) {
+    return `${p[0].toFixed(1)}_${p[1].toFixed(1)}_${floor}`;
+  }
+
+  function getOrCreateNode(p) {
+    const id = getNodeId(p);
+    if (!nodeMap.has(id)) {
+      const node = { id, pos: p, floor, edges: [] };
+      nodeMap.set(id, node);
+      nodes.push(node);
+    }
+    return nodeMap.get(id);
+  }
+
+  // ===== 1. 走廊主干（带floor）=====
+  corridorData.forEach(c => {
+    const path = c.path;
     for (let i = 0; i < path.length; i++) {
-      const pt = path[i];
-      let node = nodes.find(n => distance(n.pos, pt) < 0.1);
-      if (!node) {
-        node = { id: `c_${nodes.length}`, pos: pt, edges: [] };
-        nodes.push(node);
-      }
+      const n1 = getOrCreateNode(path[i]);
       if (i > 0) {
-        const prevPt = path[i - 1];
-        const prevNode = nodes.find(n => distance(n.pos, prevPt) < 0.1);
-        const dist = distance(prevPt, pt);
-        prevNode.edges.push({ to: node.id, weight: dist });
-        node.edges.push({ to: prevNode.id, weight: dist });
+        const n0 = getOrCreateNode(path[i - 1]);
+        const d = distance(n0.pos, n1.pos);
+        n0.edges.push({ to: n1.id, weight: d });
+        n1.edges.push({ to: n0.id, weight: d });
       }
     }
   });
 
+  // ===== 2. 房间连接（关键优化）=====
   const roomsOnFloor = allRooms.filter(r => r.floor_number === floor);
 
-  // 第二步：为每个房间创建“门口”节点（投影到最近走廊线段上）
   roomsOnFloor.forEach(room => {
     const center = room.center;
+
     let bestProj = null;
+    let bestSeg = null;
     let minDist = Infinity;
 
-    // 遍历所有走廊线段，寻找最短投影距离
-    corridorData.forEach(corridor => {
-      const path = corridor.path;
+    corridorData.forEach(c => {
+      const path = c.path;
       for (let i = 0; i < path.length - 1; i++) {
         const a = path[i];
         const b = path[i + 1];
         const proj = projectPointOnSegment(center, a, b);
-        const dist = distance(center, proj);
-        if (dist < minDist) {
-          minDist = dist;
+        const d = distance(center, proj);
+
+        if (d < minDist) {
+          minDist = d;
           bestProj = proj;
+          bestSeg = [a, b];
         }
       }
     });
 
-    if (!bestProj) return; // 无走廊数据时跳过
+    if (!bestProj) return;
 
-    // 创建房间接入节点（门口）
-    const doorNodeId = `door_${room.room_id}`;
-    const doorNode = { id: doorNodeId, pos: bestProj, edges: [] };
-    nodes.push(doorNode);
+    const roomNode = {
+      id: room.room_id,
+      pos: center,
+      floor,
+      edges: []
+    };
 
-    // 连接房间中心到门口
-    const roomNode = { id: room.room_id, pos: center, edges: [] };
+    const doorNode = getOrCreateNode(bestProj);
+
     nodes.push(roomNode);
-    const distToDoor = distance(center, bestProj);
-    roomNode.edges.push({ to: doorNodeId, weight: distToDoor });
-    doorNode.edges.push({ to: room.room_id, weight: distToDoor });
 
-    // 将门口节点连接到走廊网络：找到最近的走廊节点并建立边
-    let nearestCorridorNode = null;
-    let nearestDist = Infinity;
-    nodes.forEach(n => {
-      if (n.id.startsWith('c_')) {
-        const d = distance(bestProj, n.pos);
-        if (d < nearestDist) {
-          nearestDist = d;
-          nearestCorridorNode = n;
-        }
-      }
-    });
-    if (nearestCorridorNode) {
-      doorNode.edges.push({ to: nearestCorridorNode.id, weight: nearestDist });
-      nearestCorridorNode.edges.push({ to: doorNodeId, weight: nearestDist });
-    }
+    // 房间 → 门口
+    const d1 = distance(center, bestProj);
+    roomNode.edges.push({ to: doorNode.id, weight: d1 });
+    doorNode.edges.push({ to: roomNode.id, weight: d1 });
+
+    // 门口 → 走廊线段两端（关键！不是只连最近点）
+    const nA = getOrCreateNode(bestSeg[0]);
+    const nB = getOrCreateNode(bestSeg[1]);
+
+    const dA = distance(bestProj, nA.pos);
+    const dB = distance(bestProj, nB.pos);
+
+    doorNode.edges.push({ to: nA.id, weight: dA });
+    doorNode.edges.push({ to: nB.id, weight: dB });
+
+    nA.edges.push({ to: doorNode.id, weight: dA });
+    nB.edges.push({ to: doorNode.id, weight: dB });
   });
 
   return nodes;
@@ -138,54 +149,46 @@ function findPath(startRoomId, endRoomId) {
   const startFloor = startRoom.floor_number;
   const endFloor = endRoom.floor_number;
 
+  // ===== 同层 =====
   if (startFloor === endFloor) {
     const nodes = buildGraphFromCorridors(startFloor);
     const path = dijkstra(nodes, startRoomId, endRoomId);
-    if (path.length > 0) {
-        // 【核心修改】：给坐标数组加上第三个元素，代表楼层 [x, y, floor]
-        return smoothPath(path).map(p => [p[0], p[1], startFloor]);
-    }
-    console.warn('走廊寻路失败，使用直角折线');
-    return generateOrthogonalPath(startRoom.center, endRoom.center).map(p => [p[0], p[1], startFloor]);
+
+    return path.map(p => [p[0], p[1], startFloor]);
   }
 
-  // ===== 跨楼层寻路 =====
+  // ===== 跨层 =====
   const stairsStart = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === startFloor);
   const stairsEnd = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === endFloor);
-  
-  if (stairsStart.length === 0 || stairsEnd.length === 0) {
-    console.warn('缺少楼梯数据，使用直角折线');
-    return generateOrthogonalPath(startRoom.center, endRoom.center).map(p => [p[0], p[1], startFloor]);
-  }
 
-  // 找最近的楼梯
-  let bestStairStart = stairsStart[0];
-  let minDist = distance(startRoom.center, bestStairStart.center);
-  stairsStart.forEach(s => {
-    const d = distance(startRoom.center, s.center);
-    if (d < minDist) { minDist = d; bestStairStart = s; }
+  let bestPair = null;
+  let minDist = Infinity;
+
+  stairsStart.forEach(s1 => {
+    stairsEnd.forEach(s2 => {
+      const d = distance(s1.center, s2.center);
+      if (d < minDist) {
+        minDist = d;
+        bestPair = [s1, s2];
+      }
+    });
   });
 
-  const stairNumber = bestStairStart.name.match(/\d+/);
-  let bestStairEnd = stairsEnd.find(s => stairNumber && s.name.includes(stairNumber[0]));
-  if (!bestStairEnd) bestStairEnd = stairsEnd[0]; // 容错处理
+  if (!bestPair) return [];
 
-  const nodesStart = buildGraphFromCorridors(startFloor);
-  const pathToStair = dijkstra(nodesStart, startRoomId, bestStairStart.room_id);
-  
-  const nodesEnd = buildGraphFromCorridors(endFloor);
-  const pathFromStair = dijkstra(nodesEnd, bestStairEnd.room_id, endRoomId);
+  const [sStart, sEnd] = bestPair;
 
-  if (pathToStair.length > 0 && pathFromStair.length > 0) {
-    // 【核心修改】：拆分两层路线，分别打上楼层标签
-    const floor1Path = smoothPath(pathToStair).map(p => [p[0], p[1], startFloor]);
-    // 连接点：从上楼梯的中心点开始算下一层的起点
-    const floor2Path = smoothPath([bestStairEnd.center, ...pathFromStair]).map(p => [p[0], p[1], endFloor]);
-    
-    return [...floor1Path, ...floor2Path];
-  }
-  
-  return generateOrthogonalPath(startRoom.center, endRoom.center).map(p => [p[0], p[1], startFloor]);
+  // 分两段算
+  const nodes1 = buildGraphFromCorridors(startFloor);
+  const part1 = dijkstra(nodes1, startRoomId, sStart.room_id)
+    .map(p => [p[0], p[1], startFloor]);
+
+  const nodes2 = buildGraphFromCorridors(endFloor);
+  const part2 = dijkstra(nodes2, sEnd.room_id, endRoomId)
+    .map(p => [p[0], p[1], endFloor]);
+
+  // 去重拼接（关键）
+  return [...part1, ...part2];
 }
 
 // 简单路径平滑（可选）

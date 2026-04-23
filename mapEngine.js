@@ -174,22 +174,19 @@ function renderRouteOnCurrentFloor() {
     if (window.currentRouteLine) {
         map.removeLayer(window.currentRouteLine);
     }
-    
+
     if (!window.globalFullRoute) return;
 
-    // 【核心修改】：过滤出属于当前楼层的路径点
-    // p[2] 就是我们在 routing.js 里打上的 floor 标签
-    const currentFloorPoints = window.globalFullRoute.filter(p => p[2] === currentFloor);
-    
-    if (currentFloorPoints.length < 2) return; // 如果当前楼层没有路径，就不画
+    const pts = window.globalFullRoute
+        .filter(p => p.length === 3 && p[2] === currentFloor);
 
-    // 将坐标从 [x, y, floor] 转换为 Leaflet 的 [y, x]
-    const latLngs = currentFloorPoints.map(p => [p[1], p[0]]);
-    
-    window.currentRouteLine = L.polyline(latLngs, {
-        color: '#003f87',
-        weight: 6,
-        className: 'nav-path-animate' // 流光动画
+    if (pts.length < 2) return;
+
+    const latlngs = pts.map(p => [p[1], p[0]]);
+
+    window.currentRouteLine = L.polyline(latlngs, {
+        color: '#2563eb',
+        weight: 4
     }).addTo(map);
 }
 
