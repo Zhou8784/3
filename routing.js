@@ -92,8 +92,6 @@ function buildGraphFromCorridors(floor) {
 
     nA.edges.push({ to: doorNode.id, weight: dA });
     nB.edges.push({ to: doorNode.id, weight: dB });
-
-    // 关键增强：投影点 → 最近走廊节点（避免绕远）
     
   });
 
@@ -189,7 +187,7 @@ function findPath(startRoomId, endRoomId) {
   const nodes2 = buildGraphFromCorridors(ef);
   const part2 = dijkstra(nodes2, sEnd.room_id, endRoomId);
 
-  return [...part1, ...part2];
+  return makeOrthogonal(path);
 }
 
 // ================== 工具 ==================
@@ -211,4 +209,21 @@ function projectPointOnSegment(p, a, b) {
 
 function distance(p1, p2) {
   return Math.hypot(p1[0] - p2[0], p1[1] - p2[1]);
+}
+function makeOrthogonal(path) {
+  const result = [];
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const [x1, y1, f] = path[i];
+    const [x2, y2] = path[i + 1];
+
+    result.push([x1, y1, f]);
+
+    // 强制走直角（贴走廊）
+    result.push([x2, y1, f]);
+  }
+
+  result.push(path[path.length - 1]);
+
+  return result;
 }
