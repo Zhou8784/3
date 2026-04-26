@@ -169,7 +169,6 @@ function drawRoute(pathCoords) {
     renderRouteOnCurrentFloor();
 }
 
-// 新增辅助函数：只渲染当前楼层的路线
 function renderRouteOnCurrentFloor() {
     if (window.currentRouteLine) {
         map.removeLayer(window.currentRouteLine);
@@ -177,8 +176,12 @@ function renderRouteOnCurrentFloor() {
 
     if (!window.globalFullRoute) return;
 
-    const pts = window.globalFullRoute
-        .filter(p => p.length === 3 && p[2] === currentFloor);
+    // ⭐ 严格校验三维点
+    const pts = window.globalFullRoute.filter(p =>
+        Array.isArray(p) &&
+        p.length === 3 &&
+        p[2] === currentFloor
+    );
 
     if (pts.length < 2) return;
 
@@ -189,7 +192,6 @@ function renderRouteOnCurrentFloor() {
         weight: 4
     }).addTo(map);
 }
-
 function clearRoute() {
     if (window.currentRouteLine) {
         map.removeLayer(window.currentRouteLine);

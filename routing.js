@@ -1,38 +1,42 @@
+const GRAPH_CACHE = new Map(); // floor -> nodes
+
+function getNodeId(p, floor) {
+  return `${p[0].toFixed(2)}_${p[1].toFixed(2)}_${floor}`;
+}
+
 function buildGraphFromCorridors(floor) {
+  if (GRAPH_CACHE.has(floor)) return GRAPH_CACHE.get(floor);
+
   const nodes = [];
-  const nodeMap = new Map(); // 去重用
-
-  const corridorData = MAP_DATA.corridors?.filter(c => c.floor === floor) || [];
-
-  function getNodeId(p) {
-    return `${p[0].toFixed(1)}_${p[1].toFixed(1)}_${floor}`;
-  }
+  const nodeMap = new Map();
 
   function getOrCreateNode(p) {
-    const id = getNodeId(p);
+    const id = getNodeId(p, floor);
     if (!nodeMap.has(id)) {
-      const node = { id, pos: p, floor, edges: [] };
+      const node = { id, pos: [p[0], p[1], floor], edges: [] };
       nodeMap.set(id, node);
       nodes.push(node);
     }
     return nodeMap.get(id);
   }
 
-  // ===== 1. 走廊主干（带floor）=====
+  const corridorData = MAP_DATA.corridors.filter(c => c.floor === floor);
+
+  // ===== 1. 走廊主干（去重 + 正确连接）=====
   corridorData.forEach(c => {
     const path = c.path;
-    for (let i = 0; i < path.length; i++) {
-      const n1 = getOrCreateNode(path[i]);
-      if (i > 0) {
-        const n0 = getOrCreateNode(path[i - 1]);
-        const d = distance(n0.pos, n1.pos);
-        n0.edges.push({ to: n1.id, weight: d });
-        n1.edges.push({ to: n0.id, weight: d });
-      }
+    for (let i = 1; i < path.length; i++) {
+      const a = getOrCreateNode(path[i - 1]);
+      const b = getOrCreateNode(path[i]);
+
+      const d = distance(a.pos, b.pos);
+
+      a.edges.push({ to: b.id, weight: d });
+      b.edges.push({ to: a.id, weight: d });
     }
   });
 
-  // ===== 2. 房间连接（关键优化）=====
+  // ===== 2. 房间接入（核心优化）=====
   const roomsOnFloor = allRooms.filter(r => r.floor_number === floor);
 
   roomsOnFloor.forEach(room => {
@@ -43,10 +47,10 @@ function buildGraphFromCorridors(floor) {
     let minDist = Infinity;
 
     corridorData.forEach(c => {
-      const path = c.path;
-      for (let i = 0; i < path.length - 1; i++) {
-        const a = path[i];
-        const b = path[i + 1];
+      for (let i = 0; i < c.path.length - 1; i++) {
+        const a = c.path[i];
+        const b = c.path[i + 1];
+
         const proj = projectPointOnSegment(center, a, b);
         const d = distance(center, proj);
 
@@ -62,21 +66,20 @@ function buildGraphFromCorridors(floor) {
 
     const roomNode = {
       id: room.room_id,
-      pos: center,
-      floor,
+      pos: [center[0], center[1], floor],
       edges: []
     };
 
-    const doorNode = getOrCreateNode(bestProj);
-
     nodes.push(roomNode);
 
-    // 房间 → 门口
+    const doorNode = getOrCreateNode(bestProj);
+
+    // 房间 → 投影点
     const d1 = distance(center, bestProj);
     roomNode.edges.push({ to: doorNode.id, weight: d1 });
     doorNode.edges.push({ to: roomNode.id, weight: d1 });
 
-    // 门口 → 走廊线段两端（关键！不是只连最近点）
+    // 投影点 → 线段两端
     const nA = getOrCreateNode(bestSeg[0]);
     const nB = getOrCreateNode(bestSeg[1]);
 
@@ -88,135 +91,135 @@ function buildGraphFromCorridors(floor) {
 
     nA.edges.push({ to: doorNode.id, weight: dA });
     nB.edges.push({ to: doorNode.id, weight: dB });
+
+    // ⭐ 关键增强：投影点 → 最近走廊节点（避免绕远）
+    let nearestNode = null;
+    let best = Infinity;
+
+    nodeMap.forEach(n => {
+      const d = distance(bestProj, n.pos);
+      if (d < best) {
+        best = d;
+        nearestNode = n;
+      }
+    });
+
+    if (nearestNode) {
+      doorNode.edges.push({ to: nearestNode.id, weight: best });
+      nearestNode.edges.push({ to: doorNode.id, weight: best });
+    }
   });
 
+  GRAPH_CACHE.set(floor, nodes);
   return nodes;
 }
 
-// 计算点 p 在线段 ab 上的投影点
-function projectPointOnSegment(p, a, b) {
-  const [px, py] = p;
-  const [ax, ay] = a;
-  const [bx, by] = b;
-  const dx = bx - ax;
-  const dy = by - ay;
-  if (dx === 0 && dy === 0) return [ax, ay];
-  const t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
-  const clampedT = Math.max(0, Math.min(1, t));
-  return [ax + clampedT * dx, ay + clampedT * dy];
-}
-
+// ================== Dijkstra（稳定版） ==================
 function dijkstra(nodes, startId, endId) {
   const dist = {}, prev = {}, visited = {};
-  nodes.forEach(n => { dist[n.id] = Infinity; });
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+
+  nodes.forEach(n => dist[n.id] = Infinity);
   dist[startId] = 0;
 
   const pq = [{ id: startId, d: 0 }];
+
   while (pq.length) {
     pq.sort((a, b) => a.d - b.d);
     const { id } = pq.shift();
     if (visited[id]) continue;
     visited[id] = true;
+
     if (id === endId) break;
 
-    const node = nodes.find(n => n.id === id);
+    const node = nodeMap.get(id);
     if (!node) continue;
+
     node.edges.forEach(edge => {
-      const newDist = dist[id] + edge.weight;
-      if (newDist < dist[edge.to]) {
-        dist[edge.to] = newDist;
+      const nd = dist[id] + edge.weight;
+      if (nd < dist[edge.to]) {
+        dist[edge.to] = nd;
         prev[edge.to] = id;
-        pq.push({ id: edge.to, d: newDist });
+        pq.push({ id: edge.to, d: nd });
       }
     });
   }
 
   const path = [];
   let cur = endId;
+
   while (cur) {
-    const node = nodes.find(n => n.id === cur);
+    const node = nodeMap.get(cur);
     if (node) path.unshift(node.pos);
     cur = prev[cur];
   }
+
   return path;
 }
 
+// ================== 楼梯匹配（关键修复） ==================
+function matchStairs(startFloor, endFloor) {
+  const s1 = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === startFloor);
+  const s2 = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === endFloor);
+
+  for (let a of s1) {
+    for (let b of s2) {
+      // ⭐ 用 room_id 前缀匹配（强一致）
+      if (a.room_id.split('-')[0] === b.room_id.split('-')[0]) {
+        return [a, b];
+      }
+    }
+  }
+
+  return null;
+}
+
+// ================== 路径入口 ==================
 function findPath(startRoomId, endRoomId) {
   const startRoom = allRooms.find(r => r.room_id === startRoomId);
   const endRoom = allRooms.find(r => r.room_id === endRoomId);
+
   if (!startRoom || !endRoom) return [];
 
-  const startFloor = startRoom.floor_number;
-  const endFloor = endRoom.floor_number;
+  const sf = startRoom.floor_number;
+  const ef = endRoom.floor_number;
 
   // ===== 同层 =====
-  if (startFloor === endFloor) {
-    const nodes = buildGraphFromCorridors(startFloor);
-    const path = dijkstra(nodes, startRoomId, endRoomId);
-
-    return path.map(p => [p[0], p[1], startFloor]);
+  if (sf === ef) {
+    const nodes = buildGraphFromCorridors(sf);
+    return dijkstra(nodes, startRoomId, endRoomId);
   }
 
   // ===== 跨层 =====
-  const stairsStart = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === startFloor);
-  const stairsEnd = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === endFloor);
+  const pair = matchStairs(sf, ef);
+  if (!pair) return [];
 
-  let bestPair = null;
-  let minDist = Infinity;
+  const [sStart, sEnd] = pair;
 
-  stairsStart.forEach(s1 => {
-    stairsEnd.forEach(s2 => {
-      const d = distance(s1.center, s2.center);
-      if (d < minDist) {
-        minDist = d;
-        bestPair = [s1, s2];
-      }
-    });
-  });
+  const nodes1 = buildGraphFromCorridors(sf);
+  const part1 = dijkstra(nodes1, startRoomId, sStart.room_id);
 
-  if (!bestPair) return [];
+  const nodes2 = buildGraphFromCorridors(ef);
+  const part2 = dijkstra(nodes2, sEnd.room_id, endRoomId);
 
-  const [sStart, sEnd] = bestPair;
-
-  // 分两段算
-  const nodes1 = buildGraphFromCorridors(startFloor);
-  const part1 = dijkstra(nodes1, startRoomId, sStart.room_id)
-    .map(p => [p[0], p[1], startFloor]);
-
-  const nodes2 = buildGraphFromCorridors(endFloor);
-  const part2 = dijkstra(nodes2, sEnd.room_id, endRoomId)
-    .map(p => [p[0], p[1], endFloor]);
-
-  // 去重拼接（关键）
   return [...part1, ...part2];
 }
 
-// 简单路径平滑（可选）
-function smoothPath(path) {
-  if (path.length < 3) return path;
-  const smoothed = [path[0]];
-  for (let i = 1; i < path.length - 1; i++) {
-    const prev = path[i - 1];
-    const curr = path[i];
-    const next = path[i + 1];
-    // 若三点几乎共线，可省略中间点
-    const cross = (curr[0] - prev[0]) * (next[1] - curr[1]) - (curr[1] - prev[1]) * (next[0] - curr[0]);
-    if (Math.abs(cross) > 1) { // 拐点保留
-      smoothed.push(curr);
-    }
-  }
-  smoothed.push(path[path.length - 1]);
-  return smoothed;
-}
+// ================== 工具 ==================
+function projectPointOnSegment(p, a, b) {
+  const [px, py] = p;
+  const [ax, ay] = a;
+  const [bx, by] = b;
 
-function generateOrthogonalPath(p1, p2) {
-  const [x1, y1] = p1;
-  const [x2, y2] = p2;
-  if (Math.abs(x1 - x2) > Math.abs(y1 - y2)) {
-    return [p1, [x2, y1], p2];
-  } else {
-    return [p1, [x1, y2], p2];
-  }
+  const dx = bx - ax;
+  const dy = by - ay;
+
+  if (dx === 0 && dy === 0) return [ax, ay];
+
+  const t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+  const tt = Math.max(0, Math.min(1, t));
+
+  return [ax + tt * dx, ay + tt * dy];
 }
 
 function distance(p1, p2) {
