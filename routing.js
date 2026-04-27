@@ -3,6 +3,20 @@ const GRAPH_CACHE = new Map(); // floor -> nodes
 function getNodeId(p, floor) {
   return `${p[0].toFixed(2)}_${p[1].toFixed(2)}_${floor}`;
 }
+function isPointInCorridorPolygon(point, corridors) {
+  // 简单检查点是否在任一走廊多边形内（通过射线法）
+  // 可遍历所有走廊的 path 构成的边界框或直接使用 turf.js，这里用包围盒近似：由于走廊为矩形，直接用矩形判断
+  for (const c of corridors) {
+    const xs = c.path.map(p => p[0]);
+    const ys = c.path.map(p => p[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    if (point[0] >= minX && point[0] <= maxX && point[1] >= minY && point[1] <= maxY) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function buildGraphFromCorridors(floor) {
   if (GRAPH_CACHE.has(floor)) return GRAPH_CACHE.get(floor);
@@ -22,7 +36,7 @@ function buildGraphFromCorridors(floor) {
 
   const corridorData = MAP_DATA.corridors.filter(c => c.floor === floor);
 
-  // ===== 1. 走廊主干（去重 + 正确连接）=====
+  //走廊主干（去重 + 正确连接）
   corridorData.forEach(c => {
     const path = c.path;
     for (let i = 1; i < path.length; i++) {
@@ -36,7 +50,7 @@ function buildGraphFromCorridors(floor) {
     }
   });
 
-  // ===== 2. 房间接入（核心优化）=====
+  // 房间接入（核心优化）
   const roomsOnFloor = allRooms.filter(r => r.floor_number === floor);
 
   roomsOnFloor.forEach(room => {
@@ -63,7 +77,16 @@ function buildGraphFromCorridors(floor) {
     });
 
     if (!bestProj) return;
-    if (minDist > 200) return;//连接距离限制，防止乱接
+    if (minDist > 300) return;//4.27连接距离限制，防止乱接，扩大距离范围
+    // 4.27检查投影点是否落在走廊区域内，否则使用最近线段端点
+    const inCorridor = isPointInAnyCorridor(bestProj, corridorData);
+    let doorPoint = bestProj;
+    if (!inCorridor) {
+      const dA = distance(center, bestSeg[0]);
+      const dB = distance(center, bestSeg[1]);
+      doorPoint = dA <= dB ? bestSeg[0] : bestSeg[1];
+    }
+
 
     const roomNode = {
       id: room.room_id,
@@ -100,7 +123,7 @@ function buildGraphFromCorridors(floor) {
   return nodes;
 }
 
-// ================== Dijkstra（稳定版） ==================
+//Dijkstra（稳定版）
 function dijkstra(nodes, startId, endId) {
   const dist = {}, prev = {}, visited = {};
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
@@ -119,9 +142,22 @@ function dijkstra(nodes, startId, endId) {
     if (id === endId) break;
 
     const node = nodeMap.get(id);
-    if (node.type && node.type !== '楼梯间' && id !== endId && id !== startId) {
-    // 禁止从非楼梯间房间节点穿越（除非它是起点或终点）
-    continue;
+    // 定义可通行节点类型（走廊、大厅、连通廊、楼梯间）
+    const WALKABLE_TYPES = new Set([
+  '楼梯间',
+  '走廊大厅1', '公共走廊2', '公共走廊3', '公共走廊4', '连通廊5',
+  '走廊6', '走廊大厅7', '公共走廊8', '大厅文化长廊9', '公共走廊10',
+  '公共走廊11', '公共走廊12', '公共走廊13', '公共走廊14', '公共走廊15',
+  // 2F 对应的类型名与 1F 类似，根据实际 rooms 中的 type 补充
+  '公共走廊1', '公共走廊2', '公共走廊3', '公共走廊4', '连通廊5',
+  '走廊6', '公共走廊7', '公共走廊8', '公共走廊9', '公共走廊10',
+  '公共走廊11', '公共走廊12', '公共走廊13', '公共走廊14', '公共走廊15'
+]);
+
+
+    if (node.type && !WALKABLE_TYPES.has(node.type)) {
+    // 非可通行节点不允许作为中间节点穿越
+    if (id !== endId && id !== startId) continue;
 }
     if (!node) continue;
 
@@ -147,7 +183,7 @@ function dijkstra(nodes, startId, endId) {
   return path;
 }
 
-// ================== 楼梯匹配（关键修复） ==================
+//  楼梯匹配（关键修复） 
 function matchStairs(startFloor, endFloor) {
   const s1 = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === startFloor);
   const s2 = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === endFloor);
@@ -164,7 +200,7 @@ function matchStairs(startFloor, endFloor) {
   return null;
 }
 
-// ================== 路径入口 ==================
+// 路径入口 
 function findPath(startRoomId, endRoomId) {
   const startRoom = allRooms.find(r => r.room_id === startRoomId);
   const endRoom = allRooms.find(r => r.room_id === endRoomId);
@@ -174,30 +210,42 @@ function findPath(startRoomId, endRoomId) {
   const sf = startRoom.floor_number;
   const ef = endRoom.floor_number;
 
-  // ===== 同层 =====
+  // 同层
   if (sf === ef) {
     const nodes = buildGraphFromCorridors(sf);
     return dijkstra(nodes, startRoomId, endRoomId);
   }
 
-  // ===== 跨层 =====
-  const pair = matchStairs(sf, ef);
-  if (!pair) return [];
+  // 4.27跨层 
+   const stairsStart = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === sf);
+  const stairsEnd   = allRooms.filter(r => r.type === '楼梯间' && r.floor_number === ef);
 
-  const [sStart, sEnd] = pair;
+  let bestPath = null;
+  let bestCost = Infinity;
 
-  const nodes1 = buildGraphFromCorridors(sf);
-  const part1 = dijkstra(nodes1, startRoomId, sStart.room_id);
+  for (const sStart of stairsStart) {
+    const nodes1 = buildGraphFromCorridors(sf);
+    const part1 = dijkstra(nodes1, startRoomId, sStart.room_id);
+    if (part1.length < 2) continue;   // 不可达该楼梯间
 
-  const nodes2 = buildGraphFromCorridors(ef);
-  const part2 = dijkstra(nodes2, sEnd.room_id, endRoomId);
-  
-  const fullPath = [...part1, ...part2];
+    for (const sEnd of stairsEnd) {
+      const nodes2 = buildGraphFromCorridors(ef);
+      const part2 = dijkstra(nodes2, sEnd.room_id, endRoomId);
+      if (part2.length < 2) continue;
+
+      // 简单代价估算（后续可加入楼梯内部高度代价）
+      const cost = part1.length + part2.length;
+      if (cost < bestCost) {
+        bestCost = cost;
+        bestPath = [...part1, ...part2];
+      }
+    }
+  }
 
   return fullPath;
 }
 
-// ================== 工具 ==================
+//工具
 function projectPointOnSegment(p, a, b) {
   const [px, py] = p;
   const [ax, ay] = a;

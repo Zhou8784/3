@@ -164,13 +164,19 @@ function getStairCenters(floor) {
 }
 
 function drawRoute(pathCoords) {
-    clearRoute(); // 4.26先清除旧路线
+    // 4.27强力清除旧路线（即使有残留）
+    if (window.currentRouteLine) {
+        map.removeLayer(window.currentRouteLine);
+        window.currentRouteLine = null;
+    }
+    if (window.currentRouteMarker) {
+        map.removeLayer(window.currentRouteMarker);
+        window.currentRouteMarker = null;
+    }
 
     window.globalFullRoute = pathCoords;
-
     renderRouteOnCurrentFloor();
-
-    startNavigationFollow(pathCoords); // 4.26启动跟随
+    startNavigationFollow(pathCoords);
 }
 
 function renderRouteOnCurrentFloor() {
@@ -201,11 +207,13 @@ function clearRoute() {
         map.removeLayer(window.currentRouteLine);
         window.currentRouteLine = null;
     }
-
+    if (window.currentRouteMarker) {
+        map.removeLayer(window.currentRouteMarker);
+        window.currentRouteMarker = null;
+    }
     window.globalFullRoute = null;
-
-    // 4.26停止导航动画
     if (window.navTimer) {
+        clearTimeout(window.navTimer);
         cancelAnimationFrame(window.navTimer);
         window.navTimer = null;
     }
@@ -258,26 +266,41 @@ function toggle3D() {
 function startNavigationFollow(path) {
     if (!path || path.length < 2) return;
 
-    let i = 0;
+    // 估算总长度，避免用户看到瞬间跳跃
+    let idx = 0;
+    const speed = 120;  // 坐标单位/秒 (假设1单位≈1cm, 1.2m/s=120cm/s)
 
     function step() {
-        if (i >= path.length) return;
-
-        const [x, y, floor] = path[i];
-
-        // 自动切楼层
-        if (floor !== currentFloor) {
-            filterFloor(floor);
+        if (idx >= path.length) {
+            window.navTimer = null;
+            return;
         }
 
-        // 地图跟随移动
-        map.flyTo([y, x], 1.5, {
-            animate: true,
-            duration: 0.6
-        });
+        const [x, y, floor] = path[idx];
+        if (floor !== currentFloor) {
+            filterFloor(floor);
+            // 楼层切换需要额外等待渲染
+            setTimeout(() => {
+                map.flyTo([y, x], 1.5, { animate: true, duration: 0.8 });
+                idx++;
+                window.navTimer = setTimeout(step, 800);
+            }, 600);
+            return;
+        }
 
-        i++;
-        window.navTimer = requestAnimationFrame(step);
+        // 根据与上一点的距离计算飞行时间
+        let duration = 0.8;
+        if (idx > 0) {
+            const prev = path[idx - 1];
+            const dist = Math.hypot(x - prev[0], y - prev[1]);
+            duration = Math.min(2.0, Math.max(0.5, dist / speed));
+        }
+
+        map.flyTo([y, x], 1.5, { animate: true, duration });
+        idx++;
+        window.navTimer = setTimeout(() => {
+            requestAnimationFrame(step);
+        }, duration * 1000 + 200);
     }
 
     step();
