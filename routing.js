@@ -25,7 +25,7 @@ function buildGraphFromCorridors(floor) {
   const nodeMap = new Map();
 
   function getOrCreateNode(p) {
-    const id = getNodeId(p, floor);
+    const id = getNodeId(p, floor);//const id = getNodeId(p);
     if (!nodeMap.has(id)) {
       const node = { id, pos: [p[0], p[1], floor], edges: [] };
       nodeMap.set(id, node);
@@ -97,10 +97,10 @@ function buildGraphFromCorridors(floor) {
 
     nodes.push(roomNode);
 
-    const doorNode = getOrCreateNode(bestProj);
+    const doorNode = getOrCreateNode(doorPoint);//5.3
 
     // 房间 → 投影点
-    const d1 = distance(center, bestProj);
+    const d1 = distance(center, doorPoint);
     roomNode.edges.push({ to: doorNode.id, weight: d1 });
     doorNode.edges.push({ to: roomNode.id, weight: d1 });
 
@@ -108,8 +108,8 @@ function buildGraphFromCorridors(floor) {
     const nA = getOrCreateNode(bestSeg[0]);
     const nB = getOrCreateNode(bestSeg[1]);
 
-    const dA = distance(bestProj, nA.pos);
-    const dB = distance(bestProj, nB.pos);
+    const dA = distance(doorPoint, nA.pos);
+    const dB = distance(doorPoint, nB.pos);
 
     doorNode.edges.push({ to: nA.id, weight: dA });
     doorNode.edges.push({ to: nB.id, weight: dB });
@@ -242,7 +242,7 @@ function findPath(startRoomId, endRoomId) {
     }
   }
 
-  return fullPath;
+  return bestPath || []; 
 }
 
 //工具
